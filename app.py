@@ -1,25 +1,28 @@
 from flask import Flask, request, jsonify
 import numpy as np
 import pickle
-from sklearn.feature_extraction.text import TfidfVectorizer
-import tensorflow as tf
+import joblib
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
-# Load the trained model and vectorizer
-try:
-    with open('rnnvectorizer.pkl', 'rb') as f:
-        tfidf_vectorizer = pickle.load(f)
-    print("TF-IDF Vectorizer loaded successfully")
-except Exception as e:
-    print(f"Error loading vectorizer: {e}")
+# ✅ Load the TF-IDF Vectorizer
+import joblib
 
 try:
-    with open('rnnmodel.pkl', 'rb') as f:
-        model = pickle.load(f)
-    print("Model loaded successfully")
+    tfidf_vectorizer = joblib.load("tfidf_vectorizer.pkl")
+    print("✅ TF-IDF Vectorizer loaded successfully")
 except Exception as e:
-    print(f"Error loading model: {e}")
+    print(f"❌ Error loading TF-IDF vectorizer: {e}")
+
+
+# ✅ Load the Ensemble Model (XGBoost + Logistic Regression)
+try:
+    with open('ensemble_sentiment_model.pkl', 'rb') as f:
+        model = joblib.load(f)
+    print("✅ Ensemble Model loaded successfully")
+except Exception as e:
+    print(f"❌ Error loading model: {e}")
+    model = None  # Prevents crashes if loading fails
 
 @app.route('/')
 def home():
@@ -28,39 +31,38 @@ def home():
 
 @app.route('/predict', methods=['POST'])
 def predict():
+    if model is None or tfidf_vectorizer is None:
+        return jsonify({'error': 'Model or vectorizer not loaded', 'success': False})
+
     try:
         data = request.get_json()
-        tweet = data['tweet']
-        print(f"Received tweet: {tweet}")
-        
-        # Preprocess the tweet using TF-IDF
-        tfidf_features = tfidf_vectorizer.transform([tweet]).toarray()
-        print(f"TF-IDF features shape: {tfidf_features.shape}")
-        
-        # Reshape for RNN if needed (assuming model expects 3D input)
-        # Adjust this based on your model's expected input shape
-        tfidf_features = tfidf_features.reshape(1, -1, 1)
-        print(f"Reshaped input shape: {tfidf_features.shape}")
-        
-        # Make prediction
-        prediction = model.predict(tfidf_features)[0][0]
-        print(f"Raw prediction: {prediction}")
-        
-        # Interpret result
-        sentiment = 'Positive' if prediction > 0.5 else 'Negative'
-        confidence = float(prediction) if prediction > 0.5 else float(1 - prediction)
-        
+        tweet = data.get('tweet', '').strip()
+
+        if not tweet:
+            return jsonify({'error': 'Empty tweet provided', 'success': False})
+
+        print(f"🔹 Received tweet: {tweet}")
+
+        # ✅ Convert tweet to TF-IDF features
+        tfidf_features = tfidf_vectorizer.transform([tweet])
+        print(f"🔹 TF-IDF features shape: {tfidf_features.shape}")
+
+        # ✅ Make prediction using ensemble model
+        prediction_proba = model.predict_proba(tfidf_features)[0]
+        predicted_class = np.argmax(prediction_proba)  # 0 for Negative, 1 for Positive
+        confidence = round(float(np.max(prediction_proba)) * 100, 2)  # Confidence %
+
+        # ✅ Interpret sentiment
+        sentiment = 'Positive' if predicted_class == 1 else 'Negative'
+
         return jsonify({
             'sentiment': sentiment,
-            'confidence': round(confidence * 100, 2),
+            'confidence': confidence,
             'success': True
         })
     except Exception as e:
-        print(f"Prediction error: {e}")
-        return jsonify({
-            'error': str(e),
-            'success': False
-        })
+        print(f"❌ Prediction error: {e}")
+        return jsonify({'error': str(e), 'success': False})
 
 if __name__ == '__main__':
     app.run(debug=True)
