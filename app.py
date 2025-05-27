@@ -1,68 +1,74 @@
-from flask import Flask, request, jsonify
+import streamlit as st
 import numpy as np
 import pickle
-import joblib
+import re
+import string
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.sequence import pad_sequences
 
-app = Flask(__name__, static_folder='static', static_url_path='/static')
+# ========== Load Tokenizer and Model ==========
+with open("tokenizer4.pkl", "rb") as f:
+    tokenizer = pickle.load(f)
 
-# ✅ Load the TF-IDF Vectorizer
-import joblib
+model = load_model("tweet_sentiment_lstm_model4.h5")
 
-try:
-    tfidf_vectorizer = joblib.load("tfidf_vectorizer.pkl")
-    print("✅ TF-IDF Vectorizer loaded successfully")
-except Exception as e:
-    print(f"❌ Error loading TF-IDF vectorizer: {e}")
+# ========== Configuration ==========
+maxlen = 80  # Must match training time padding length
 
+# ========== Label Mapping ==========
+label_map = {
+    0: "Negative",
+    1:"Positive"
+}
 
-# ✅ Load the Ensemble Model (XGBoost + Logistic Regression)
-try:
-    with open('ensemble_sentiment_model.pkl', 'rb') as f:
-        model = joblib.load(f)
-    print("✅ Ensemble Model loaded successfully")
-except Exception as e:
-    print(f"❌ Error loading model: {e}")
-    model = None  # Prevents crashes if loading fails
+# ========== Preprocessing Function ==========
+def preprocess_tweet(text):
+    # Lowercase
+    text = text.lower()
+    
+    # Remove URLs
+    text = re.sub(r"http\S+|www\S+|https\S+", "", text, flags=re.MULTILINE)
+    
+    # Remove user mentions and hashtags (but keep the words)
+    text = re.sub(r"@\w+", "", text)
+    text = re.sub(r"#", "", text)
+    
+    # Remove punctuations and numbers
+    text = re.sub(r"[^a-zA-Z\s]", "", text)
+    
+    # Remove extra whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    
+    return text
 
-@app.route('/')
-def home():
-    print("Serving index.html")
-    return app.send_static_file('index.html')
+# ========== Streamlit UI ==========
+st.set_page_config(page_title="Tweet Sentiment Analyzer", page_icon="💬", layout="centered")
+st.title("💬 Tweet Sentiment Analyzer")
+st.markdown("Analyze the sentiment of tweets using a deep learning LSTM model with preprocessing.")
 
-@app.route('/predict', methods=['POST'])
-def predict():
-    if model is None or tfidf_vectorizer is None:
-        return jsonify({'error': 'Model or vectorizer not loaded', 'success': False})
+# Input text box
+tweet = st.text_area("Enter a Tweet", placeholder="Type or paste a tweet here...", height=150)
 
-    try:
-        data = request.get_json()
-        tweet = data.get('tweet', '').strip()
+# Predict button
+if st.button("Analyze Sentiment"):
+    if not tweet.strip():
+        st.warning("⚠️ Please enter a tweet.")
+    else:
+        # Preprocess tweet
+        cleaned = preprocess_tweet(tweet)
+        
+        # Tokenize and pad
+        seq = tokenizer.texts_to_sequences([cleaned])
+        padded = pad_sequences(seq, maxlen=maxlen, padding='post')
+        
+        # Predict
+        prediction = model.predict(padded)
+        pred_class = np.argmax(prediction)
 
-        if not tweet:
-            return jsonify({'error': 'Empty tweet provided', 'success': False})
+        # Display results
+        st.success(f"🧠 **Predicted Sentiment:** {label_map[pred_class]}")
+        st.markdown(f"📊 **Confidence:** `{prediction[0][pred_class]*100:.2f}%`")
 
-        print(f"🔹 Received tweet: {tweet}")
-
-        # ✅ Convert tweet to TF-IDF features
-        tfidf_features = tfidf_vectorizer.transform([tweet])
-        print(f"🔹 TF-IDF features shape: {tfidf_features.shape}")
-
-        # ✅ Make prediction using ensemble model
-        prediction_proba = model.predict_proba(tfidf_features)[0]
-        predicted_class = np.argmax(prediction_proba)  # 0 for Negative, 1 for Positive
-        confidence = round(float(np.max(prediction_proba)) * 100, 2)  # Confidence %
-
-        # ✅ Interpret sentiment
-        sentiment = 'Positive' if predicted_class == 1 else 'Negative'
-
-        return jsonify({
-            'sentiment': sentiment,
-            'confidence': confidence,
-            'success': True
-        })
-    except Exception as e:
-        print(f"❌ Prediction error: {e}")
-        return jsonify({'error': str(e), 'success': False})
-
-if __name__ == '__main__':
-    app.run(debug=True)
+        st.subheader("🔎 Prediction Breakdown")
+        for i, prob in enumerate(prediction[0]):
+            st.write(f"{label_map[i]}: {prob*100:.2f}%")
